@@ -11,13 +11,13 @@ datasource db {
 
 // Documento fonte indexado (página de docs, arquivo md, etc.)
 model Document {
-  id          String   @id @default(cuid())
-  title       String
-  sourceUrl   String   @unique
-  category    String   // "API" | "SDK" | "Guide" | "FAQ"
-  rawContent  String
-  updatedAt   DateTime @updatedAt
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  title      String
+  sourceUrl  String   @unique
+  category   String // "API" | "SDK" | "Guide" | "FAQ"
+  rawContent String
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
 
   chunks DocumentChunk[]
 
@@ -26,16 +26,16 @@ model Document {
 
 // Chunk de documento com embedding vetorial
 model DocumentChunk {
-  id              String                 @id @default(cuid())
-  documentId      String
-  content         String
+  id          String                       @id @default(cuid())
+  documentId  String
+  content     String
   // Hierarquia de seções: ["Guia de início", "Autenticação"]
-  sectionPath     String[]
+  sectionPath String[]
   // Embedding: 1536 dims (text-embedding-3-small) ou 768 (nomic-embed-text)
-  embedding       Unsupported("vector(1536)")?
-  chunkIndex      Int
-  tokenCount      Int
-  createdAt       DateTime               @default(now())
+  embedding   Unsupported("vector(1536)")?
+  chunkIndex  Int
+  tokenCount  Int
+  createdAt   DateTime                     @default(now())
 
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
