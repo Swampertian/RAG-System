@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { load } from 'cheerio';
 import { DocumentCategory } from '../../../common/interfaces/chunk.interface';
 
@@ -24,6 +25,14 @@ const CATEGORY_PATTERNS: Array<{ pattern: RegExp; category: DocumentCategory }> 
 @Injectable()
 export class DocusaurusCrawler {
   private readonly logger = new Logger(DocusaurusCrawler.name);
+  private readonly requestTimeoutMs: number;
+
+  constructor(private readonly config: ConfigService) {
+    this.requestTimeoutMs = parseInt(
+      this.config.get('CRAWLER_REQUEST_TIMEOUT_MS', '15000'),
+      10,
+    );
+  }
 
   async crawl(baseUrl: string): Promise<CrawledPage[]> {
     const entries = await this.discoverUrlsFromSitemap(baseUrl);
@@ -44,7 +53,9 @@ export class DocusaurusCrawler {
   }
 
   private async discoverUrlsFromSitemap(baseUrl: string): Promise<SitemapEntry[]> {
-    const response = await fetch(`${baseUrl}/sitemap.xml`);
+    this.logger.debug(`[crawl] fetching sitemap url=${baseUrl}/sitemap.xml timeout=${this.requestTimeoutMs}ms`);
+
+    const response = await this.fetchWithTimeout(`${baseUrl}/sitemap.xml`);
     const xmlText = await response.text();
     const $ = load(xmlText, { xmlMode: true });
 
@@ -62,11 +73,12 @@ export class DocusaurusCrawler {
       }
     });
 
+    this.logger.debug(`[crawl] sitemap parsed entries=${entries.length}`);
     return entries;
   }
 
   private async fetchPage(url: string, lastModified: Date): Promise<CrawledPage | null> {
-    const response = await fetch(url);
+    const response = await this.fetchWithTimeout(url);
 
     if (!response.ok) {
       return null;
@@ -89,6 +101,22 @@ export class DocusaurusCrawler {
       rawHtml,
       lastModified,
     };
+  }
+
+  private async fetchWithTimeout(url: string): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+    try {
+      return await fetch(url, { signal: controller.signal });
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        throw new Error(`Request timed out after ${this.requestTimeoutMs}ms: ${url}`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   detectCategory(url: string): DocumentCategory {

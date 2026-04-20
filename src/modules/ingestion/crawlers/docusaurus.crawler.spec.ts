@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { DocusaurusCrawler } from './docusaurus.crawler';
 
 const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -34,7 +35,10 @@ describe('DocusaurusCrawler', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [DocusaurusCrawler],
+      providers: [
+        DocusaurusCrawler,
+        { provide: ConfigService, useValue: { get: jest.fn((_k: string, d: string) => d) } },
+      ],
     }).compile();
     crawler = module.get<DocusaurusCrawler>(DocusaurusCrawler);
 
