@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/static/css/base.css" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <title>Woovi</title>
+  </head>
+  <body data-chat-app>
+    <main class="chat-shell">
+      <section id="messages" class="messages">
+      </section>
+      <section class="composer">
+        <form id="chat-form">
+          <input
+            id="question"
+            name="question"
+            autocomplete="off"
+            placeholder="Pergunte sobre a documentação"
+            required
+          />
+          <button id="submit-button" type="submit">Enviar</button>
+        </form>
+      </section>
+    </main>
+    <script>
+      const history = [];
+      const messagesEl = document.getElementById('messages');
+      const formEl = document.getElementById('chat-form');
+      const questionEl = document.getElementById('question');
+      const submitButtonEl = document.getElementById('submit-button');
+
+      function scrollToBottom() {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function createMessageElement(kind, text) {
+        const article = document.createElement('article');
+        article.className = `message message-${kind}`;
+        article.textContent = text;
+        messagesEl.appendChild(article);
+        scrollToBottom();
+        return article;
+      }
+
+      function createAssistantMessage() {
+        const article = document.createElement('article');
+        article.className = 'message message-assistant';
+
+        const text = document.createElement('div');
+        text.className = 'message-text';
+        article.appendChild(text);
+
+        messagesEl.appendChild(article);
+        scrollToBottom();
+
+        return { article, text };
+      }
+
+      function appendSources(container, urls) {
+        if (!urls.length) return;
+
+        const existing = container.querySelector('.sources');
+        if (existing) {
+          existing.remove();
+        }
+
+        const sources = document.createElement('div');
+        sources.className = 'sources';
+
+        const label = document.createElement('strong');
+        label.textContent = 'Fontes';
+        sources.appendChild(label);
+
+        urls.forEach((url) => {
+          const link = document.createElement('a');
+          link.href = url;
+          link.target = '_blank';
+          link.rel = 'noreferrer';
+          link.textContent = url;
+          sources.appendChild(link);
+        });
+
+        container.appendChild(sources);
+        scrollToBottom();
+      }
+
+      function setComposerDisabled(disabled) {
+        questionEl.disabled = disabled;
+        submitButtonEl.disabled = disabled;
+      }
+
+      function removeIntro() {
+        const introEl = messagesEl.querySelector('.intro');
+        if (introEl) {
+          introEl.remove();
+        }
+      }
+
+      function parseSseFrames(buffer) {
+        const normalized = buffer.replace(/\r\n/g, '\n');
+        const frames = normalized.split('\n\n');
+        const remainder = frames.pop() ?? '';
+
+        const events = frames
+          .map((frame) => {
+            const lines = frame.split('\n');
+            const eventLine = lines.find((line) => line.startsWith('event:'));
+            const dataLines = lines.filter((line) => line.startsWith('data:'));
+
+            if (!eventLine || dataLines.length === 0) {
+              return null;
+            }
+
+            return {
+              type: eventLine.slice(6).trim(),
+              data: dataLines.map((line) => line.slice(5).trim()).join('\n'),
+            };
+          })
+          .filter(Boolean);
+
+        return { events, remainder };
+      }
+
+      function handleSseEvent(event, state) {
+        if (event.type === 'token') {
+          const token = JSON.parse(event.data);
+          state.answer += typeof token === 'string' ? token : '';
+          state.assistant.text.textContent = state.answer;
+          scrollToBottom();
+          return;
+        }
+
+        if (event.type === 'sources') {
+          const payload = JSON.parse(event.data);
+          const urls = Array.isArray(payload.urls) ? payload.urls : [];
+          appendSources(state.assistant.article, urls);
+          return;
+        }
+
+        if (event.type === 'error') {
+          const payload = JSON.parse(event.data);
+          throw new Error(payload.message || 'Stream interrupted');
+        }
+
+        if (event.type === 'done') {
+          state.completed = true;
+        }
+      }
+
+      async function streamAnswer(question) {
+        const response = await fetch('/ask', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            question,
+            history,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        if (!response.body) {
+          throw new Error('Missing response body');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        const state = {
+          answer: '',
+          completed: false,
+          assistant: createAssistantMessage(),
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+          const parsed = parseSseFrames(buffer);
+          buffer = parsed.remainder;
+
+          for (const event of parsed.events) {
+            handleSseEvent(event, state);
+          }
+
+          if (done) {
+            if (buffer.trim()) {
+              const finalParsed = parseSseFrames(`${buffer}\n\n`);
+              buffer = finalParsed.remainder;
+
+              for (const event of finalParsed.events) {
+                handleSseEvent(event, state);
+              }
+            }
+
+            break;
+          }
+        }
+
+        if (!state.completed) {
+          throw new Error('Stream encerrado antes do evento final.');
+        }
+
+        history.push({ role: 'user', content: question });
+        history.push({ role: 'assistant', content: state.answer });
+      }
+
+      formEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const question = questionEl.value.trim();
+
+        if (!question) {
+          return;
+        }
+
+        removeIntro();
+        createMessageElement('user', question);
+        questionEl.value = '';
+        setComposerDisabled(true);
+
+        try {
+          await streamAnswer(question);
+        } catch (error) {
+          createMessageElement(
+            'error',
+            error instanceof Error ? error.message : 'Nao foi possivel concluir a resposta.',
+          );
+        } finally {
+          setComposerDisabled(false);
+          questionEl.focus();
+        }
+      });
+    </script>
+  </body>
+</html>
